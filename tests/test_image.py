@@ -288,6 +288,73 @@ class TestEinkDashboardImage:
         )
         assert has_dark
 
+    @pytest.mark.parametrize("entity_key", ["entity", "entity_id"])
+    @pytest.mark.parametrize(
+        ("condition", "entity_id", "met_state", "unmet_state"),
+        [
+            (
+                {"condition": "numeric_state", "above": 34.9},
+                "sensor.volume",
+                "40",
+                "10",
+            ),
+            (
+                {"condition": "state", "state": "on"},
+                "binary_sensor.playing",
+                "on",
+                "off",
+            ),
+        ],
+        ids=["numeric_state", "state"],
+    )
+    async def test_invert_condition_tracks_state_in_image(
+        self,
+        hass: HomeAssistant,
+        make_entity: Callable[..., Any],
+        entity_key: str,
+        condition: dict[str, Any],
+        entity_id: str,
+        met_state: str,
+        unmet_state: str,
+    ) -> None:
+        # A tile's invert_condition must be evaluated against live HA
+        # states on the image entity's own render path, not only in
+        # the SVG preview: the PNG shows a black card while the
+        # condition holds and a white one once it no longer does.
+        # Both condition key spellings are covered because HA's
+        # conditions editor saves "entity_id" while hand-written
+        # layouts usually use "entity".
+        hass.states.async_set("script.go", "off")
+        hass.states.async_set(entity_id, met_state)
+        entity, _entry = make_entity()
+        entity.set_widgets(
+            [
+                {
+                    "type": "tile",
+                    "x": 0,
+                    "y": 0,
+                    "w": 200,
+                    "h": 100,
+                    "entity": "script.go",
+                    "hide_state": True,
+                    "card_style": "border",
+                    "invert_condition": [{**condition, entity_key: entity_id}],
+                }
+            ]
+        )
+
+        def _mean_luma() -> float:
+            assert entity._rendered is not None
+            img = _png_from_bytes(entity._rendered).convert("L")
+            return sum(img.tobytes()) / (img.width * img.height)
+
+        await entity._async_refresh(None)
+        assert _mean_luma() < 100
+
+        hass.states.async_set(entity_id, unmet_state)
+        await entity._async_refresh(None)
+        assert _mean_luma() > 155
+
     async def test_build_states_from_hass(
         self, hass: HomeAssistant, make_entity: Callable[..., Any]
     ) -> None:
